@@ -1,0 +1,86 @@
+version: "3.9"
+
+# =============================================================================
+# Distributed Task Queue — local dev + CI environment
+#
+# Services:
+#   postgres  — job store, broker (LISTEN/NOTIFY), and advisory lock host
+#   api       — FastAPI REST layer (uvicorn)
+#   worker    — async worker pool (1 process, WORKER_COUNT workers inside)
+#
+# Start everything:  docker compose up --build
+# Run tests:         docker compose run --rm api pytest tests/ -v
+# Scale workers:     docker compose up --scale worker=3
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     taskuser
+      POSTGRES_PASSWORD: taskpass
+      POSTGRES_DB:       taskqueue
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskuser -d taskqueue"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # API
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://taskuser:taskpass@postgres:5432/taskqueue
+      DB_MIN_SIZE:  2
+      DB_MAX_SIZE:  10
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Worker
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:      postgresql://taskuser:taskpass@postgres:5432/taskqueue
+      DB_MIN_SIZE:       2
+      DB_MAX_SIZE:       10
+      WORKER_COUNT:      4
+      RETRY_BASE_DELAY:  5
+      POLL_INTERVAL:     5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Graceful shutdown: give workers 60 s to finish current job
+    stop_grace_period: 60s
+
+volumes:
+  pg_data:
+    driver: local

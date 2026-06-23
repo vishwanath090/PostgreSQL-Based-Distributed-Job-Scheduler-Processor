@@ -1,0 +1,26 @@
+# =============================================================================
+# Dockerfile.worker — Async worker process
+# =============================================================================
+FROM python:3.12-slim AS base
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY worker/ worker/
+COPY db/     db/
+COPY api/    api/
+
+RUN useradd -m -u 1001 appuser && chown -R appuser /app
+USER appuser
+
+# SIGTERM is sent by docker compose stop; the worker catches it and exits
+# cleanly after finishing the current job (stop_grace_period: 60s in compose).
+STOPSIGNAL SIGTERM
+
+CMD ["python", "-m", "worker.worker"]
