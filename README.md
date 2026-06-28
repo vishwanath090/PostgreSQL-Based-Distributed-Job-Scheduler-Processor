@@ -85,6 +85,7 @@ exclusive lock on the same row simultaneously) and queue head-of-line blocking
 claim transaction commits — at which point `status` is already `'claimed'` so
 the row is no longer in the `WHERE status='pending'` predicate.
 
+
 **Lock 2 — `pg_try_advisory_lock(id)` (session-level, connection-scoped).**
 `FOR UPDATE SKIP LOCKED` protects the row only for the duration of the claim
 transaction.  The moment that transaction commits, the row lock is released.

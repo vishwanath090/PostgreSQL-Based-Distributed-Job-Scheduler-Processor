@@ -22,9 +22,10 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER:     taskuser
-      POSTGRES_PASSWORD: taskpass
-      POSTGRES_DB:       taskqueue
+      POSTGRES_USER:             taskuser
+      POSTGRES_PASSWORD:         taskpass
+      POSTGRES_DB:               taskqueue
+      POSTGRES_HOST_AUTH_METHOD: md5       # asyncpg on Windows fails with default scram-sha-256
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./db/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql

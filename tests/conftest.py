@@ -7,23 +7,25 @@ No mocking — every test hits a real Postgres instance (taskqueue_test).
 
 Key fixtures
 ------------
-db_setup    session-scoped — creates the test DB + applies schema once.
-             Also sets DATABASE_URL env var so workers auto-target the test DB.
-pool        function-scoped asyncpg.Pool; truncates all tables before each test.
-client      httpx.AsyncClient wired to a FastAPI app with the test pool injected.
-enqueue     helper coroutine: inserts a job and returns its id (int).
-test_dsn    convenience fixture exposing the test DB DSN string so tests can
-             pass it explicitly to run_worker(…, dsn=test_dsn).
+db_setup      session-scoped — creates the test DB + applies schema once.
+               Also sets DATABASE_URL env var so workers auto-target the test DB.
+pool          SESSION-scoped asyncpg.Pool — created once, shared across all tests.
+clean_tables  autouse function-scoped — truncates all tables before each test.
+client        SESSION-scoped httpx.AsyncClient wired to a FastAPI app.
+enqueue       helper coroutine: inserts a job and returns its id (int).
+test_dsn      convenience fixture exposing the test DB DSN string.
+
+Fix applied (vs original):
+  pool   — added scope="session"  (was function-scoped by default → InterfaceError)
+  client — added scope="session"  (was function-scoped by default → InterfaceError)
+  TRUNCATE moved from pool body → clean_tables autouse fixture so it still
+  runs before every test without recreating the pool each time.
 
 Environment variables (defaults work with docker-compose):
   TEST_DB_URL   — explicit DSN for the test database (highest priority)
   DATABASE_URL  — if set, replaces /taskqueue with /taskqueue_test
 
 Compatibility: pytest-asyncio >= 0.21 (loop_scope API).
-The deprecated session-scoped event_loop fixture has been removed.
-All async fixtures declare loop_scope="session" so they share one event loop
-for the entire test session — required because asyncpg connections/pools are
-bound to the loop they were created on.
 """
 
 from __future__ import annotations
@@ -53,7 +55,6 @@ def _test_dsn() -> str:
     if explicit:
         return explicit
     base = os.environ.get("DATABASE_URL", _DEFAULT_TEST_DSN)
-    # Make sure we're targeting the *test* database.
     if base.endswith("/taskqueue"):
         return base[: -len("/taskqueue")] + "/taskqueue_test"
     if "/taskqueue_test" not in base:
@@ -62,12 +63,7 @@ def _test_dsn() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Session-scoped DB: create schema once, expose DSN, set DATABASE_URL
-#
-# loop_scope="session" ensures this fixture — and every async fixture that
-# depends on it — runs on the same long-lived event loop.  Without this,
-# pytest-asyncio 0.23+ gives each test its own loop, which causes asyncpg
-# to raise InterfaceError when a pool created on loop A is used on loop B.
+# Session-scoped DB setup — runs once for the entire test session
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -79,14 +75,13 @@ async def db_setup() -> str:
     that calls _db_dsn() (e.g. run_worker's dedicated connections) picks
     up the test database automatically.
     """
-    dsn     = _test_dsn()
-    db_name = dsn.rsplit("/", 1)[-1]
+    dsn       = _test_dsn()
+    db_name   = dsn.rsplit("/", 1)[-1]
     admin_dsn = dsn.rsplit("/", 1)[0] + "/postgres"
 
     # Create (or re-create) the test database
     admin = await asyncpg.connect(admin_dsn)
     try:
-        # Terminate any open connections to avoid "database is being accessed"
         await admin.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
             "WHERE datname = $1 AND pid <> pg_backend_pid()",
@@ -110,7 +105,7 @@ async def db_setup() -> str:
 
     yield dsn
 
-    # Teardown
+    # Teardown — drop the test DB after the session ends
     os.environ.pop("DATABASE_URL", None)
     admin = await asyncpg.connect(admin_dsn)
     try:
@@ -135,20 +130,21 @@ def test_dsn(db_setup: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Function-scoped pool + table truncation
+# Session-scoped pool — created ONCE, shared across all tests
 # ---------------------------------------------------------------------------
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def pool(db_setup: str) -> asyncpg.Pool:
     """
     asyncpg pool connected to the test DB.
 
-    Truncates all tables (RESTART IDENTITY) before each test so every test
-    starts with an empty queue. RESTART IDENTITY resets BIGSERIAL counters
-    so id=1 is always the first job in a fresh test.
+    scope="session" is critical: creating and closing a pool per test on a
+    shared session-scoped event loop causes asyncpg to raise:
+      InterfaceError: cannot perform operation: another operation is in progress
+    because teardown of test N races with setup of test N+1 on the same loop.
 
-    loop_scope="session" keeps this pool on the same event loop as db_setup
-    and all worker tasks spawned during tests.
+    Table truncation is handled by the separate clean_tables autouse fixture
+    so every test still starts with an empty queue.
     """
     async def _init(conn: asyncpg.Connection) -> None:
         await conn.set_type_codec(
@@ -167,12 +163,8 @@ async def pool(db_setup: str) -> asyncpg.Pool:
     p = await asyncpg.create_pool(
         dsn=db_setup,
         min_size=2,
-        max_size=20,   # tests spin up many workers
+        max_size=20,  # tests spin up many concurrent workers
         init=_init,
-    )
-
-    await p.execute(
-        "TRUNCATE jobs, dead_letter_jobs RESTART IDENTITY CASCADE"
     )
 
     yield p
@@ -181,16 +173,39 @@ async def pool(db_setup: str) -> asyncpg.Pool:
 
 
 # ---------------------------------------------------------------------------
-# FastAPI test client
+# Per-test table reset — autouse so every test starts with an empty queue
 # ---------------------------------------------------------------------------
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(autouse=True, loop_scope="session")
+async def clean_tables(pool: asyncpg.Pool) -> None:
+    """
+    Truncate all tables and reset BIGSERIAL counters before each test.
+    RESTART IDENTITY ensures id=1 is always the first job in a fresh test,
+    making assertion messages predictable.
+
+    autouse=True means this runs automatically for every test without needing
+    to be declared as a parameter.
+    """
+    await pool.execute(
+        "TRUNCATE jobs, dead_letter_jobs RESTART IDENTITY CASCADE"
+    )
+    yield
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped FastAPI test client
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def client(pool: asyncpg.Pool):
     """
     httpx.AsyncClient pointed at the FastAPI app.
 
     Injects the test pool directly into app.state, bypassing the lifespan
-    create_pool() call so tests don't need an extra pool.
+    create_pool() call so tests don't need a separate pool.
+
+    scope="session" matches the pool scope — sharing one client for all tests
+    avoids the same InterfaceError that affected the pool.
     """
     from api.main import create_app
 
@@ -212,7 +227,7 @@ async def client(pool: asyncpg.Pool):
 def enqueue(pool: asyncpg.Pool):
     """
     Returns an async callable: enqueue(type, payload, priority, max_retries, run_at)
-    Inserts a job and returns its id (int).
+    Inserts a job directly into the DB and returns its id (int).
     """
     async def _enqueue(
         type: str = "noop",
