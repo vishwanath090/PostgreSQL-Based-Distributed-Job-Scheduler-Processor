@@ -113,8 +113,8 @@ def _make_notify_callback(worker_id: str):
 # ---------------------------------------------------------------------------
 
 async def _try_claim(
-    conn: asyncpg.Connection,
-    worker_id: str,
+        conn: asyncpg.Connection,
+        worker_id: str,
 ) -> Optional[asyncpg.Record]:
     """
     Attempt to claim exactly one pending, eligible job on *conn*.
@@ -128,27 +128,27 @@ async def _try_claim(
     """
     async with conn.transaction():
         row = await conn.fetchrow("""
-            SELECT id, type, payload, status, priority, attempt,
-                   max_retries, run_at, worker_id, error
-            FROM   jobs
-            WHERE  status  = 'pending'
-              AND  run_at <= NOW()
-              AND  pg_try_advisory_lock(id)
-            ORDER BY priority DESC, run_at ASC
-            FOR UPDATE SKIP LOCKED
+                                  SELECT id, type, payload, status, priority, attempt,
+                                         max_retries, run_at, worker_id, error
+                                  FROM   jobs
+                                  WHERE  status  = 'pending'
+                                    AND  run_at <= NOW()
+                                    AND  pg_try_advisory_lock(id)
+                                  ORDER BY priority DESC, run_at ASC
+                                      FOR UPDATE SKIP LOCKED
             LIMIT 1
-        """)
+                                  """)
 
         if row is None:
             return None
 
         await conn.execute("""
-            UPDATE jobs
-            SET    status     = 'claimed',
-                   claimed_at = NOW(),
-                   worker_id  = $1
-            WHERE  id         = $2
-        """, worker_id, row["id"])
+                           UPDATE jobs
+                           SET    status     = 'claimed',
+                                  claimed_at = NOW(),
+                                  worker_id  = $1
+                           WHERE  id         = $2
+                           """, worker_id, row["id"])
 
     return row
 
@@ -158,10 +158,10 @@ async def _try_claim(
 # ---------------------------------------------------------------------------
 
 async def _execute_job(
-    pool: asyncpg.Pool,
-    claim_conn: asyncpg.Connection,
-    job: asyncpg.Record,
-    worker_id: str,
+        pool: asyncpg.Pool,
+        claim_conn: asyncpg.Connection,
+        job: asyncpg.Record,
+        worker_id: str,
 ) -> None:
     """
     Run the handler for *job*, write result, release the advisory lock.
@@ -170,20 +170,21 @@ async def _execute_job(
     be released on that same connection. Using pool.acquire() for the unlock
     would target a different backend session and silently fail.
     """
-    job_id   = job["id"]
-    job_type = job["type"]
-    attempt  = job["attempt"]
+    job_id      = job["id"]
+    job_type    = job["type"]
+    attempt     = job["attempt"]
+    log_attempt = attempt + 1  # 1-indexed for human-readable logs
 
     await pool.execute("""
-        UPDATE jobs
-        SET    status       = 'running',
-               heartbeat_at = NOW()
-        WHERE  id           = $1
-    """, job_id)
+                       UPDATE jobs
+                       SET    status       = 'running',
+                              heartbeat_at = NOW()
+                       WHERE  id           = $1
+                       """, job_id)
 
     logger.info(
         "Worker %s running job %s (type=%s attempt=%s)",
-        worker_id, job_id, job_type, attempt,
+        worker_id, job_id, job_type, log_attempt,
     )
     t0 = time.monotonic()
 
@@ -193,17 +194,19 @@ async def _execute_job(
         result   = await handler(job_dict)
         elapsed  = time.monotonic() - t0
 
-        # Pass dict directly — the pool's JSONB codec encodes it for the wire.
-        # Passing json.dumps(result) here would double-encode (string → JSON string).
+        # Increment attempt on SUCCESS only — makes attempt==1 after a clean
+        # first run. The exactly-once tests assert attempt==1 to verify single
+        # execution. _handle_failure owns the increment on the failure path.
         await pool.execute("""
-            UPDATE jobs
-            SET    status       = 'done',
-                   result       = $1,
-                   completed_at = NOW(),
-                   worker_id    = $2,
-                   heartbeat_at = NULL
-            WHERE  id           = $3
-        """, result, worker_id, job_id)
+                           UPDATE jobs
+                           SET    status       = 'done',
+                                  result       = $1,
+                                  completed_at = NOW(),
+                                  worker_id    = $2,
+                                  heartbeat_at = NULL,
+                                  attempt      = attempt + 1
+                           WHERE  id           = $3
+                           """, result, worker_id, job_id)
 
         logger.info("Worker %s done job %s in %.3fs", worker_id, job_id, elapsed)
 
@@ -211,8 +214,10 @@ async def _execute_job(
         elapsed = time.monotonic() - t0
         logger.warning(
             "Worker %s job %s failed (attempt %s) in %.3fs: %s",
-            worker_id, job_id, attempt, elapsed, exc,
+            worker_id, job_id, log_attempt, elapsed, exc,
         )
+        # Pass original job (pre-execution attempt) — _handle_failure increments
+        # attempt itself so unit tests can call it directly with known values.
         await _handle_failure(pool, job, exc, worker_id)
 
     finally:
@@ -228,14 +233,14 @@ async def _execute_job(
 # ---------------------------------------------------------------------------
 
 async def _handle_failure(
-    pool: asyncpg.Pool,
-    job: asyncpg.Record,
-    error: Exception,
-    worker_id: str,
+        pool: asyncpg.Pool,
+        job: asyncpg.Record,
+        error: Exception,
+        worker_id: str,
 ) -> None:
     """Schedule a retry or move the job to dead_letter_jobs."""
     job_id      = job["id"]
-    attempt     = job["attempt"]
+    attempt     = job["attempt"]   # pre-execution attempt (0-indexed); we increment here
     max_retries = job["max_retries"]
     error_str   = f"{type(error).__name__}: {error}"
 
@@ -248,38 +253,38 @@ async def _handle_failure(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("""
-                    INSERT INTO dead_letter_jobs
-                      (original_id, type, payload, error, attempts, worker_id)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                """,
-                    job_id,
-                    job["type"],
-                    payload_dict,          # dict — codec encodes
-                    error_str,
-                    attempt + 1,
-                    worker_id,
-                )
+                                   INSERT INTO dead_letter_jobs
+                                       (original_id, type, payload, error, attempts, worker_id)
+                                   VALUES ($1, $2, $3, $4, $5, $6)
+                                   """,
+                                   job_id,
+                                   job["type"],
+                                   payload_dict,
+                                   error_str,
+                                   attempt + 1,
+                                   worker_id,
+                                   )
                 await conn.execute("""
-                    UPDATE jobs
-                    SET    status  = 'dead',
-                           error   = $1,
-                           attempt = attempt + 1
-                    WHERE  id      = $2
-                """, error_str, job_id)
+                                   UPDATE jobs
+                                   SET    status  = 'dead',
+                                          error   = $1,
+                                          attempt = attempt + 1
+                                   WHERE  id      = $2
+                                   """, error_str, job_id)
 
         logger.error("Job %s dead-lettered after %s attempts", job_id, attempt + 1)
 
     else:
         backoff = (2 ** attempt) * BASE_DELAY
         await pool.execute("""
-            UPDATE jobs
-            SET    status    = 'pending',
-                   attempt   = attempt + 1,
-                   run_at    = NOW() + ($1 || ' seconds')::interval,
+                           UPDATE jobs
+                           SET    status    = 'pending',
+                                  attempt   = attempt + 1,
+                                  run_at    = NOW() + ($1 || ' seconds')::interval,
                    error     = $2,
-                   worker_id = NULL
-            WHERE  id        = $3
-        """, str(backoff), error_str, job_id)
+                               worker_id = NULL
+                           WHERE  id        = $3
+                           """, str(backoff), error_str, job_id)
 
         logger.info("Job %s retry %s in %.0fs", job_id, attempt + 1, backoff)
 
@@ -289,9 +294,9 @@ async def _handle_failure(
 # ---------------------------------------------------------------------------
 
 async def run_worker(
-    worker_id: str,
-    pool: asyncpg.Pool,
-    dsn: Optional[str] = None,
+        worker_id: str,
+        pool: asyncpg.Pool,
+        dsn: Optional[str] = None,
 ) -> None:
     """
     Single-worker coroutine.

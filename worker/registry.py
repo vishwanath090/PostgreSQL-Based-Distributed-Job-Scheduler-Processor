@@ -108,3 +108,98 @@ async def _slow_handler(job: dict) -> dict:
 async def _echo_handler(job: dict) -> dict:
     """Returns the payload verbatim as the result."""
     return dict(job.get("payload", {}))
+
+
+# =============================================================================
+# Mathematical computation handlers — results are verifiable correct
+# =============================================================================
+
+@register("is_prime")
+async def _is_prime_handler(job: dict) -> dict:
+    """
+    Trial-division primality test.
+
+    Payload:  {"n": 15485863}
+    Result:   {"n": 15485863, "is_prime": true, "divisors_checked": 3936}
+
+    Verification: recompute with the same algorithm and compare.
+    Real CPU work: O(√n) divisions — takes measurable time for large n.
+    """
+    import math
+    n = int(job["payload"]["n"])
+
+    if n < 2:
+        return {"n": n, "is_prime": False, "divisors_checked": 0}
+    if n == 2:
+        return {"n": n, "is_prime": True,  "divisors_checked": 1}
+    if n % 2 == 0:
+        return {"n": n, "is_prime": False, "divisors_checked": 1}
+
+    checked = 1
+    limit   = math.isqrt(n) + 1
+    for d in range(3, limit, 2):
+        checked += 1
+        if n % d == 0:
+            return {"n": n, "is_prime": False, "divisors_checked": checked}
+
+    return {"n": n, "is_prime": True, "divisors_checked": checked}
+
+
+@register("collatz")
+async def _collatz_handler(job: dict) -> dict:
+    """
+    Compute the Collatz (3n+1) sequence from n until it reaches 1.
+
+    Payload:  {"n": 27}
+    Result:   {"n": 27, "steps": 111, "max_value": 9232, "sequence_checksum": ...}
+
+    The sequence_checksum (sum of all values) is deterministic and verifiable.
+    """
+    n   = int(job["payload"]["n"])
+    cur = n
+    steps     = 0
+    max_val   = n
+    total_sum = n                    # checksum: sum of every value in the sequence
+
+    while cur != 1:
+        if cur % 2 == 0:
+            cur //= 2
+        else:
+            cur = 3 * cur + 1
+        steps     += 1
+        max_val    = max(max_val, cur)
+        total_sum += cur
+
+    return {
+        "n":                  n,
+        "steps":              steps,
+        "max_value":          max_val,
+        "sequence_checksum":  total_sum,
+    }
+
+
+@register("sha256_chain")
+async def _sha256_chain_handler(job: dict) -> dict:
+    """
+    Hash a seed string through SHA-256 `rounds` times in a chain.
+    Each round hashes the previous hex digest.
+
+    Payload:  {"seed": "task-queue", "rounds": 5000}
+    Result:   {"final_hash": "abc123...", "rounds": 5000, "seed": "task-queue"}
+
+    Deterministic: same seed + rounds always produces the same final_hash.
+    Tunable CPU load: increase rounds for heavier work.
+    """
+    import hashlib
+    seed   = str(job["payload"]["seed"])
+    rounds = int(job["payload"].get("rounds", 1000))
+
+    current = seed.encode()
+    for _ in range(rounds):
+        current = hashlib.sha256(current).digest()
+
+    return {
+        "seed":       seed,
+        "rounds":     rounds,
+        "final_hash": current.hex(),
+    }

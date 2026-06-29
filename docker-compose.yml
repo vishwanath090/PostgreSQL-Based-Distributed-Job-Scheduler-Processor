@@ -25,7 +25,8 @@ services:
       POSTGRES_USER:             taskuser
       POSTGRES_PASSWORD:         taskpass
       POSTGRES_DB:               taskqueue
-      POSTGRES_HOST_AUTH_METHOD: md5       # asyncpg on Windows fails with default scram-sha-256
+      POSTGRES_HOST_AUTH_METHOD: md5       # pg_hba.conf: use md5 for TCP connections
+      POSTGRES_INITDB_ARGS:      "-c password_encryption=md5"  # store password hash as md5 (not scram-sha-256)
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./db/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
