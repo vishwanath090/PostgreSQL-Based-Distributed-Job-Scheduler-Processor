@@ -172,28 +172,50 @@ pytest tests/ -v
 
 # Option B: full in-compose run
 docker compose run --rm api pytest tests/ -v
+$ docker compose exec api pytest tests/ -v
 
-# Expected output (abridged):
-# tests/test_enqueue.py::test_enqueue_minimal_body            PASSED
-# tests/test_enqueue.py::test_enqueue_full_body               PASSED
-# tests/test_enqueue.py::test_cancel_pending_job              PASSED
-# tests/test_enqueue.py::test_cancel_running_job_returns_409  PASSED
-# tests/test_exactly_once.py::test_exactly_once_single_job    PASSED
-# tests/test_exactly_once.py::test_exactly_once_many_jobs     PASSED
-# tests/test_exactly_once.py::test_no_job_claimed_twice_...   PASSED
-# tests/test_retry.py::test_retry_sets_run_at_to_future       PASSED
-# tests/test_retry.py::test_full_retry_cycle_flaky_job        PASSED
-# tests/test_retry.py::test_backoff_delay_formula             PASSED
-# tests/test_dlq.py::test_dlq_job_lands_after_exhausted_...  PASSED
-# tests/test_dlq.py::test_dlq_transition_is_atomic            PASSED
-# tests/test_priority.py::test_priority_order_single_worker   PASSED
-# tests/test_priority.py::test_try_claim_returns_highest_...  PASSED
-# tests/test_priority.py::test_future_scheduled_job_not_...   PASSED
-# tests/test_stale_reaper.py::test_stale_running_job_...      PASSED
-# tests/test_stale_reaper.py::test_end_to_end_reaper_then_... PASSED
-# ================================================================
-# 25 passed in 18.42s
-```
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.2.2, pluggy-1.6.0
+plugins: anyio-4.14.1, asyncio-0.24.0
+collected 35 items
+
+tests/test_dlq.py::test_dlq_after_exhausted_retries          PASSED  [  2%]
+tests/test_dlq.py::test_dlq_transition_is_atomic             PASSED  [  5%]
+tests/test_dlq.py::test_dlq_no_duplicates                    PASSED  [  8%]
+tests/test_dlq.py::test_dlq_preserves_payload                PASSED  [ 11%]
+tests/test_enqueue.py::test_enqueue_minimal_body              PASSED  [ 14%]
+tests/test_enqueue.py::test_enqueue_full_body                 PASSED  [ 17%]
+tests/test_enqueue.py::test_enqueue_invalid_priority           PASSED  [ 20%]
+tests/test_enqueue.py::test_enqueue_invalid_max_retries        PASSED  [ 22%]
+tests/test_enqueue.py::test_get_job_found                      PASSED  [ 25%]
+tests/test_enqueue.py::test_get_job_not_found                  PASSED  [ 28%]
+tests/test_enqueue.py::test_list_jobs_empty                    PASSED  [ 31%]
+tests/test_enqueue.py::test_list_jobs_status_filter             PASSED  [ 34%]
+tests/test_enqueue.py::test_list_jobs_pagination                PASSED  [ 37%]
+tests/test_enqueue.py::test_list_jobs_invalid_status             PASSED  [ 40%]
+tests/test_enqueue.py::test_cancel_pending_job                  PASSED  [ 42%]
+tests/test_enqueue.py::test_cancel_running_job_returns_409        PASSED  [ 45%]
+tests/test_enqueue.py::test_cancel_nonexistent_job                PASSED  [ 48%]
+tests/test_enqueue.py::test_metrics_endpoint                       PASSED  [ 51%]
+tests/test_exactly_once.py::test_exactly_once_single_job             PASSED  [ 54%]
+tests/test_exactly_once.py::test_exactly_once_many_jobs               PASSED  [ 57%]
+tests/test_exactly_once.py::test_advisory_lock_prevents_double_claim    PASSED  [ 60%]
+tests/test_priority.py::test_priority_order_single_worker               PASSED  [ 62%]
+tests/test_priority.py::test_try_claim_returns_highest_priority          PASSED  [ 65%]
+tests/test_priority.py::test_priority_tiebreak_by_run_at                  PASSED  [ 68%]
+tests/test_priority.py::test_future_scheduled_job_not_claimed              PASSED  [ 71%]
+tests/test_retry.py::test_retry_sets_run_at_to_future                       PASSED  [ 74%]
+tests/test_retry.py::test_full_retry_cycle_flaky_job                         PASSED  [ 77%]
+tests/test_retry.py::test_attempt_increments_on_each_failure                  PASSED  [ 80%]
+tests/test_retry.py::test_backoff_delay_formula                                PASSED  [ 82%]
+tests/test_stale_reaper.py::test_stale_running_job_reclaimed                     PASSED  [ 85%]
+tests/test_stale_reaper.py::test_stale_claimed_job_reclaimed                      PASSED  [ 88%]
+tests/test_stale_reaper.py::test_terminal_jobs_not_reclaimed                       PASSED  [ 91%]
+tests/test_stale_reaper.py::test_fresh_running_job_not_reclaimed                    PASSED  [ 94%]
+tests/test_stale_reaper.py::test_end_to_end_reaper_then_worker                       PASSED  [ 97%]
+tests/test_stale_reaper.py::test_reaper_loop_shuts_down_cleanly                       PASSED  [100%]
+
+======================= 35 passed, 2 warnings in 44.64s ========================```
 
 ---
 
@@ -201,30 +223,32 @@ docker compose run --rm api pytest tests/ -v
 
 Run on a 2023 MacBook Pro M2, Docker Desktop, 4 worker goroutines, PostgreSQL 16
 default config (no tuning):
+┌─────────────────────────────────────────────────────────┐
+  │            Math Benchmark — Verified Results            │
+  ├─────────────────────────────────────────────────────────┤
+  │  Jobs submitted               600                       │
+  │  Jobs completed (done)        600                       │
+  │  Jobs failed/timed out        0                         │
+  ├─────────────────────────────────────────────────────────┤
+  │  ✓ Correct results            600/600                   │
+  │  ✗ Incorrect results          0                         │
+  │  Accuracy                     100.0000%                 │
+  ├─────────────────────────────────────────────────────────┤
+  │  End-to-end throughput        126 jobs/s                │
+  │  p50 latency                  704.7 ms                   │
+  │  p75 latency                  942.8 ms                   │
+  │  p95 latency                  1096.0 ms                  │
+  │  p99 latency                  1131.7 ms                  │
+  │  max latency                  1162.6 ms                  │
+  ├─────────────────────────────────────────────────────────┤
+  │                  Per-type breakdown                     │
+  ├─────────────────────────────────────────────────────────┤
+  │  sha256_chain    200/200  correct  p50=674.2ms  p99=1150.3ms │
+  │  collatz         200/200  correct  p50=716.3ms  p99=1131.7ms │
+  │  is_prime        200/200  correct  p50=709.4ms  p99=1143.7ms │
+  └─────────────────────────────────────────────────────────┘
 
-```
-  ┌───────────────────────────────────────────────────────┐
-  │           Task Queue Benchmark Results                │
-  ├───────────────────────────────────────────────────────┤
-  │  Jobs enqueued          10,000                       │
-  │  Concurrency            50                           │
-  │  Enqueue time           3.84 s                       │
-  │  Enqueue rate           2,604 jobs/s                 │
-  │  Worker count           4                            │
-  │  Total pipeline time    18.7 s                       │
-  │  End-to-end jobs/sec    535 jobs/s                   │
-  │                                                      │
-  │  Latency (created_at → completed_at)                 │
-  │    p50    0.71 s                                     │
-  │    p75    0.98 s                                     │
-  │    p95    2.11 s                                     │
-  │    p99    3.44 s                                     │
-  │    max    5.88 s                                     │
-  │                                                      │
-  │  ✓ TARGET MET (≥500 jobs/s)                          │
-  └───────────────────────────────────────────────────────┘
-```
-
+  ✓ ALL RESULTS MATHEMATICALLY CORRECT
 To reproduce:
 
 ```bash
